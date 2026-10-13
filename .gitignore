@@ -1,0 +1,29 @@
+# ══════ 边缘网关 · 根 .gitignore ══════
+# 原则：只跟踪「源」——代码 / .ioc / CMake / 文档；产物与外部依赖一律排除。
+
+# ── 构建产物（可再生成）──
+build/
+Debug/
+Release/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# ── CubeMX 临时 / 备份 ──
+mx.scratch
+*_backup*
+*.mx.bak
+
+# ── 编辑器 / 系统 ──
+.vscode/*
+!.vscode/settings.json
+.DS_Store
+Thumbs.db
+
+# ── 参考仓库（zgd-V2.0 自带 .git，整目录排除，避免被当成子模块）──
+reference/
+
+# ── 本地环境工具（com0com 安装包 + 一次性脚本，非项目源码）──
+tools/
