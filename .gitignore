@@ -17,8 +17,7 @@ mx.scratch
 *.mx.bak
 
 # ── 编辑器 / 系统 ──
-.vscode/*
-!.vscode/settings.json
+.vscode/
 .DS_Store
 Thumbs.db
 
