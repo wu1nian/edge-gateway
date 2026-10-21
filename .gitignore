@@ -10,6 +10,7 @@ Release/
 *.bin
 *.hex
 *.map
+*.exe
 
 # ── CubeMX 临时 / 备份 ──
 mx.scratch
@@ -25,4 +26,8 @@ Thumbs.db
 reference/
 
 # ── 本地环境工具（com0com 安装包 + 一次性脚本，非项目源码）──
-tools/
+tools/com0com/
+tools/com0com-*.zip
+tools/com0com_*
+tools/cleanup_vspd.ps1
+tools/test_port.ps1

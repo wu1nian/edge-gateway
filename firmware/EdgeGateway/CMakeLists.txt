@@ -45,6 +45,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Core/Src/modbus_host.c        # 纯协议：CRC / 组帧 / 解析 / 双超时
+    Core/Src/modbus_port_stm32.c  # 移植层：HAL 串口 + RS485 方向脚
 )
 
 # Add include paths
