@@ -1,54 +1,187 @@
-# edge-gateway · 工业物联网边缘网关（复刻优化）
+# edge-gateway
 
-本目录是 **STM32F411 + FreeRTOS + LVGL 工业边缘网关** 的学习/求职项目工作区。
+一个跑在 STM32F411 上的工业物联网边缘网关。做的事情不复杂：从 RS485 总线上
+的传感器读温湿度，存到本地 Flash，同时通过网络发到云端，中间有个触摸屏能看。
 
-参考项目：[`zgd-dev/-V2.0`](https://github.com/zgd-dev/-V2.0)（commit `40b4460`）
+协议部分是我自己写的——Modbus-RTU 和 MQTT 3.1.1 都是从零手写，没有引入任何
+现成的协议栈或客户端库。这是这个项目的主要目的：把「能调库跑通」变成「能自己
+把字节拼对，并且说得清每个字节为什么是这个值」。
 
-> ⚠️ 本目录**不直接修改参考仓库**。从 CubeMX 新建工程自己重写，写完一个模块再对照参考找差距。
+参考项目是 [`zgd-dev/-V2.0`](https://github.com/zgd-dev/-V2.0)（commit `40b4460`）。
+那个仓库里有一个能跑的完整版本，我把它克隆下来当对照，但**不直接改它**——
+从 CubeMX 新建工程重写，写完一个模块再回去比差距，看自己漏了什么。
 
-## 目录结构
+## 硬件
 
+STM32F411CEU6（WeAct 黑药丸）· ESP8266（AT 固件）· W25Q64 Flash ·
+2.8" SPI 触摸屏（ILI9341 + XPT2046）· SP3485 RS485 收发器 · ST-Link V2
+
+整机约 ¥130。选型理由和下单清单在 [`hardware/BOM.md`](hardware/BOM.md)。
+
+## 进度
+
+目前做完前三周，第四周在写。
+
+| 周 | 内容 | 状态 |
+|:--|:--|:--|
+| W1 | CubeMX 骨架、96 MHz 时钟、FreeRTOS、printf 重定向 | 完成 |
+| W2 | 手写 Modbus-RTU 主站，PC 仿真先行 | 完成 |
+| W3 | 手写 MQTT 3.1.1 报文层，真 broker 验证 | 完成 |
+| W4 | RTOS 任务架构（任务划分、队列、锁、数据流） | 进行中 |
+| W5 | Flash 分区与掉电保护 | 未开始 |
+| W6 | 传感器采集、LVGL 界面 | 未开始 |
+| W7 | ESP8266 联网、接真云端 | 未开始 |
+| W8 | 优化与压测 | 未开始 |
+| W9 | 收尾、文档、复盘 | 未开始 |
+
+**W3 是最近完成的一周**，也是目前证据最实的一周：
+
+- `mqtt_codec.c` 692 行，纯 C，只 include 了 `<stddef.h>` 和 `<string.h>`，
+  不碰 HAL 也不碰 FreeRTOS。所以在 PC 上用 gcc 就能直接编译测试。
+- 30 条单元测试向量全部通过，`-Wall -Wextra -Werror` 零警告。
+- 拿真 broker 测了两轮：本机 Mosquitto、公网 HiveMQ、公网 EMQX，三家都是
+  正向 7 项通过、4 条故意改坏的反例被正确拒绝。
+- 固件编译 0 error 0 warning，RAM 16.47%、FLASH 7.90%。
+
+细节在 [`docs/w3-summary.md`](docs/w3-summary.md)。
+
+## 文件说明
+
+下面按目录讲每个文件是干什么的。CubeMX 自动生成的代码和手写代码会分开标。
+
+### 根目录
+
+| 文件 | 说明 |
+|:--|:--|
+| `README.md` | 就是这份文件 |
+| `.gitignore` | 排除构建产物（`build/`、`*.elf`、`*.exe`）、编辑器配置、CubeMX 备份，以及整个 `reference/`（自带 `.git`，不排除会被当成子模块） |
+| `.clang-format` | 统一代码风格，clangd 和 clang-format 共用。基于 LLVM 改了缩进宽度、行宽、大括号位置 |
+
+### `firmware/EdgeGateway/` —— 固件工程
+
+工程根目录的文件：
+
+| 文件 | 说明 |
+|:--|:--|
+| `EdgeGateway.ioc` | CubeMX 工程文件。引脚分配、时钟树、外设开关都以它为准，改了要重新生成 |
+| `.mxproject` | CubeMX 的生成记录，用来判断哪些文件是它生成的 |
+| `CMakeLists.txt` | 构建主文件。CubeMX 生成的部分之外，我在这里手工登记了自己写的三个源文件（`modbus_host.c`、`modbus_port_stm32.c`、`mqtt_codec.c`） |
+| `CMakePresets.json` | 定义 `Debug` / `Release` 两个配置，都继承一个隐藏的 `default`（Ninja 生成器 + ARM 工具链）。产物分别落在 `build/Debug` 和 `build/Release` |
+| `STM32F411xx_FLASH.ld` | 链接脚本，规定代码放 FLASH（512 KB）、变量放 RAM（128 KB）的地址布局 |
+| `startup_stm32f411xe.s` | 启动汇编。设置初始栈指针、定义中断向量表、跳到 `main` |
+| `cmake/gcc-arm-none-eabi.cmake` | 交叉编译工具链描述，告诉 CMake 用 `arm-none-eabi-gcc` |
+| `cmake/stm32cubemx/CMakeLists.txt` | CubeMX 生成的构建片段，把 HAL 库、FreeRTOS、CMSIS 编译成静态库 |
+
+`Core/Inc/` —— 头文件：
+
+| 文件 | 说明 |
+|:--|:--|
+| `main.h` | 主头文件，主要是引脚宏定义。CubeMX 生成 |
+| `modbus_host.h` | **手写**。Modbus 协议核心的对外接口：功能码、参数范围、SHT20 寄存器地址、帧结构体、CRC 函数、收发函数 |
+| `modbus_port_stm32.h` | **手写**。移植层接口，只有一个 `mb_port_stm32()`，返回一个绑定到 USART2 的串口操作表 |
+| `mqtt_codec.h` | **手写**。MQTT 报文层接口：RL 编解码、各种组帧函数、收包分类、心跳判断，以及 `MQTT_RL_MAX_BYTES` 等常量 |
+| `FreeRTOSConfig.h` | FreeRTOS 配置。tick 定 1000 Hz，抢占式调度，堆 15360 字节。CubeMX 生成，我改过堆大小 |
+| `stm32f4xx_hal_conf.h` | HAL 模块开关，决定哪些外设驱动被编进去 |
+| `stm32f4xx_it.h` | 中断服务函数声明 |
+| `gpio.h` / `usart.h` / `spi.h` / `rtc.h` / `iwdg.h` | 各外设的初始化函数声明，CubeMX 生成 |
+
+`Core/Src/` —— 源文件：
+
+| 文件 | 说明 |
+|:--|:--|
+| `main.c` | 程序入口。外设初始化、启动 FreeRTOS 调度器。初始化代码是 CubeMX 生成的，`USER CODE` 区里是我写的，其中最重要的一段是 `_write` 重定向到 USART1，`printf` 才能打到串口 |
+| `freertos.c` | FreeRTOS 初始化，创建默认任务。目前默认任务里只有一段临时逻辑：喂狗、翻转 LED、打印一行、延时 500 ms。文件末尾我加了栈溢出钩子 `vApplicationStackOverflowHook`，任务爆栈时停在那里，方便挂调试器看是谁。W4 会把这个文件铺开成六个业务任务 |
+| `modbus_host.c` | **手写，231 行**。Modbus-RTU 全部协议逻辑：CRC-16 查表、0x03/0x04/0x06 组帧、正常与异常响应解析、字节间超时和帧间超时两层超时。完全不含 HAL，靠调用方传入的读写函数指针操作串口 |
+| `modbus_port_stm32.c` | **手写，77 行**。把 `modbus_host` 和 STM32 连起来：用 `HAL_UART_Transmit` / `HAL_UART_Receive` 收发，加上 RS485 方向脚（DE）的翻转时序 |
+| `mqtt_codec.c` | **手写，692 行**。MQTT 3.1.1 报文层：Remaining Length 变长整数编解码、CONNECT/SUBSCRIBE/PUBLISH/PUBACK/PINGREQ/DISCONNECT 组帧、收包边界分类、心跳到期判断 |
+| `gpio.c` / `usart.c` / `spi.c` / `rtc.c` / `iwdg.c` | 各外设初始化，CubeMX 生成，目前没有手工改动。`usart.c` 里开了两路：USART1 给调试打印，USART2 给 RS485。ESP8266 用的串口要等 W7 再加 |
+| `stm32f4xx_hal_msp.c` | HAL 的底层初始化回调（时钟使能、引脚复用、NVIC 配置），CubeMX 生成 |
+| `stm32f4xx_hal_timebase_tim.c` | 用 TIM 做 HAL 的时基，这样 HAL 的 `HAL_Delay` 不占 SysTick，SysTick 留给 FreeRTOS |
+| `stm32f4xx_it.c` | 中断服务函数实现，CubeMX 生成 |
+| `system_stm32f4xx.c` | 系统时钟初始化，CubeMX 生成 |
+| `syscalls.c` / `sysmem.c` | newlib 的系统调用桩，CubeMX 生成。里面的 `_write` 是弱符号，`main.c` 里那个强符号会覆盖它 |
+
+`Drivers/` 和 `Middlewares/` 是 ST 官方代码和 FreeRTOS 源码，原样引入，没有改动：
+
+- `Drivers/CMSIS/` —— ARM 内核头文件和启动支持
+- `Drivers/STM32F4xx_HAL_Driver/` —— ST 的 HAL 库
+- `Middlewares/Third_Party/FreeRTOS/` —— FreeRTOS 内核 + CMSIS-RTOS v2 封装层
+
+### `tools/` —— PC 侧验证工具
+
+这里的东西都不参与固件编译，纯粹为了在 PC 上先把协议逻辑验掉。三个工具都
+复用 `firmware/` 里同一份协议源码——不存在「测试用一份、固件用另一份」。
+
+| 文件 | 说明 |
+|:--|:--|
+| `pc_sim/pc_sim_main.c` | Modbus 主站 PC 仿真。用 com0com 建一对虚拟串口，程序开一头当主站，Modbus Slave 开另一头当从站，验证真串口链路 |
+| `pc_sim/win_serial_port.c` / `.h` | Win32 串口 API 的封装，实现和 STM32 版一样的读写函数指针，这样 `modbus_host.c` 两边能通用 |
+| `pc_sim/build.bat` / `run.bat` / `run_note14.bat` | 编译和运行脚本 |
+| `pc_sim/README.md` | 怎么配 com0com、怎么配 Modbus Slave、怎么注入错误 |
+| `mqtt_test/test_mqtt_codec.c` | MQTT 报文层单元测试，30 条向量。覆盖 RL 编解码边界值、各种 CONNECT 组合、SUBSCRIBE/PUBLISH 组帧、收包分类、返回码映射、心跳判断 |
+| `mqtt_test/build.bat` / `run.bat` | 编译（`-std=c11 -Wall -Wextra -Werror -O2`）和运行 |
+| `mqtt_broker_check/broker_check.c` | 真 broker 验证。用 Winsock 直连 broker，手拼 CONNECT/SUBSCRIBE/PUBLISH/PINGREQ/DISCONNECT 发过去，检查回包；另外开四条连接故意发坏报文，确认 broker 真的会拒绝 |
+| `mqtt_broker_check/mosquitto.conf` | 本地 Mosquitto 配置，只监听 `127.0.0.1:1883`、允许匿名，避免把匿名 broker 暴露到局域网 |
+| `mqtt_broker_check/build.bat` / `run.bat` | 编译（链 `ws2_32`）和运行 |
+| `mqtt_broker_check/README.md` | 正向用例和反例分别怎么判定、怎么换公网 broker |
+| `test_modbus.c` | Modbus 早期的手工测试：先验 CRC（标准向量 `123456789` 应得 `4B37`），再把三种请求帧打出来跟笔记里的期望字节逐个对。后来被 `pc_sim` 的串口链路测试取代了，留着当快速自检 |
+
+### `docs/` —— 文档
+
+| 文件 | 说明 |
+|:--|:--|
+| `modbus.md` | Modbus 协议合同。SHT20 的寄存器表、请求响应帧格式、哨兵帧、手册里 CRC 的勘误。代码以这份为准 |
+| `mqtt.md` | MQTT 验证记录。每个单元跑了什么、实际输出是什么、公网 broker 偶发失败怎么定位的，还有一节专门写「哪些是自己推的、哪些只是参考了命名风格」 |
+| `w3-summary.md` | W3 阶段总结。交付物、验证证据、设计决策、踩坑、验收清单、验证边界 |
+
+### `hardware/`
+
+| 文件 | 说明 |
+|:--|:--|
+| `BOM.md` | 物料清单。每个器件的型号、价格、下单时要认准什么参数 |
+
+### `reference/`
+
+`zgd-V2.0/` 是参考项目原样克隆，自带 `.git`，被 `.gitignore` 排除在外，
+不会进版本库，也不会被当成子模块。只读，不修改。
+
+## 关于验证
+
+这个项目里我会尽量把「证明了什么」和「没证明什么」分开写。
+
+比如 W3 的 broker 验证全部在 PC 上完成：Windows gcc 编译 `mqtt_codec.c`，
+Winsock 直连 broker。这证明了**协议实现的字节是对的**，但**没有证明** STM32
+侧真的能收发、ESP8266 真的能透传、云端真的能收到数据。
+
+后者要等硬件到货之后才能测，在 W7。在那之前的文档里，相关内容都标记为待验证，
+不会写成已完成。编译通过不等于跑通，这两个是不同的事。
+
+## 怎么跑
+
+固件：
+
+```bat
+cd firmware\EdgeGateway
+cmake --preset Debug
+cmake --build build\Debug
 ```
-edge-gateway/
-├── reference/zgd-V2.0/   原仓库克隆（只读参考，含完整提交历史）
-├── firmware/             你自己的工程（CubeMX 生成，从零新建）
-├── docs/                 设计文档：协议合同、验证记录、阶段总结
-├── tools/                PC 侧验证工具：Modbus 仿真 / MQTT 单元测试 / 真 broker 检查
-└── hardware/             BOM、接线图、引脚分配表
+
+需要把 `arm-none-eabi-gcc` 放在 PATH 里。产物是 `build/Debug/EdgeGateway.elf`。
+
+MQTT 报文层单元测试（不需要硬件）：
+
+```bat
+cd tools\mqtt_test
+build.bat
+run.bat
 ```
 
-## 硬件（约 ¥130）
+真 broker 验证（需要本机有 Mosquitto，或者能连公网）：
 
-STM32F411CEU6 · ESP8266(AT固件) · W25Q64 · 2.8" SPI 触摸屏(ILI9341+XPT2046) · SP3485 · ST-Link V2
+```bat
+cd tools\mqtt_broker_check
+build.bat
+broker_check.exe 127.0.0.1 1883
+```
 
-## 当前进度（2026-10-31）
-
-| 周 | 主题 | 状态 |
-|:---:|:---|:---|
-| W1 | 环境与骨架（CubeMX / 时钟树 / FreeRTOS / printf 重定向） | ✅ 完成 |
-| W2 | 手写 Modbus-RTU 主站 + PC 仿真 | ✅ 主体完成 |
-| **W3** | **手写 MQTT 3.1.1 报文层 + 真 broker 验证** | **✅ 完成** |
-| W4 | RTOS 任务架构（6 任务 / 锁与队列 / 数据流） | 🚧 进行中 |
-| W5–W9 | Flash 分区 · 采集与 LVGL · ESP8266 上云 · 优化压测 · 收尾 | ⬜ 未开始 |
-
-- **W1 已完成**：CubeMX 骨架、96 MHz 时钟树、FreeRTOS（CMSIS-RTOS v2）、printf 重定向到 USART1。
-- **W2 主体完成**：手写 Modbus-RTU 主站——CRC-16 查表、0x03/0x04/0x06 组帧、正常/异常响应解析、双层超时；STM32 侧接 USART2 + RS485 方向脚；PC 侧用 com0com + Modbus Slave 把真串口链路跑通，SHT20 温湿度帧已经对上了。
-- **W3 已完成**：**不用任何 MQTT 客户端库**，按 OASIS 3.1.1 规范从零手写报文层（`mqtt_codec.c` 692 行，纯 C、不依赖 HAL/FreeRTOS）——Remaining Length 编解码、CONNECT / SUBSCRIBE / PUBLISH / PUBACK / PINGREQ / DISCONNECT 组帧、收包分类、心跳到期判断。
-  - 单元测试 **29 / 29 PASS**（`tools/mqtt_test/`，`-Wall -Wextra -Werror` 零警告）；
-  - 真 broker 正向 **7 项 + 反例 4 条全部通过**：本机 Mosquitto 2.1.2、公网 HiveMQ（连测 5 次）、公网 EMQX 三家独立实现结论一致；
-  - 固件编译 0 error / 0 warning，RAM 16.47% / FLASH 7.90%；
-  - 详见 [`docs/w3-summary.md`](docs/w3-summary.md)（阶段总结）与 [`docs/mqtt.md`](docs/mqtt.md)（验证记录 + 自写/参考边界）。
-- **接下来**：W4 任务架构——把 W2 的 Modbus 与 W3 的 MQTT 接进 6 个任务的优先级 / 队列 / 锁体系。
-
-> **验证边界**（重要）：本周 broker 验证全部在 **PC 上**完成——Windows gcc 编译 `mqtt_codec.c`、Winsock 直连 broker。
-> 这证明**协议实现正确**，但**尚未证明** STM32 侧真实收发、ESP8266 AT 透传、巴法云实连——
-> 这三项要等硬件到货后在 W7 补。RS485 实际电平、方向切换时序、传感器真实读数同样待硬件确认。
-> **编译通过 ≠ 跑通。**
-
-## 文档与验证
-
-- **W3 阶段总结**：[`docs/w3-summary.md`](docs/w3-summary.md)
-- MQTT 验证记录 + 自写/参考边界：[`docs/mqtt.md`](docs/mqtt.md)
-- 真 broker 怎么跑（Mosquitto 配置、反例注入、公网 broker）：[`tools/mqtt_broker_check/README.md`](tools/mqtt_broker_check/README.md)
-- 协议合同（寄存器表、哨兵帧、手册 CRC 勘误）：[`docs/modbus.md`](docs/modbus.md)
-- PC 仿真怎么跑（COM3/COM4、Modbus Slave 配置、错误注入）：[`tools/pc_sim/README.md`](tools/pc_sim/README.md)
+也可以直接打公网测试 broker：`broker_check.exe broker.hivemq.com 1883`。

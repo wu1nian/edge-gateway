@@ -110,8 +110,8 @@ RESULT: ALL PASS
 
 重新构建并跑了一遍（`gcc -Wall -Wextra -Werror` 零警告）：
 
-- `tools/mqtt_test/test_mqtt_codec.exe`：29 条向量全部 PASS（RL 7 条、组帧 8 条、收包分类 8 条、返回码映射 7 项、心跳判断 6 项）；
-- `tools/mqtt_broker_check` 打本机 Mosquitto：正向 6 项 + 反例 4 条，`RESULT: ALL PASS`；
+- `tools/mqtt_test/test_mqtt_codec.exe`：30 条向量全部 PASS（RL 编解码 7 条、组帧 10 条、收包分类 11 条、返回码映射 7 项、心跳判断 6 项）；
+- `tools/mqtt_broker_check` 打本机 Mosquitto：正向 7 项 + 反例 4 条，`RESULT: ALL PASS`；
 - 打公网 HiveMQ：连续 5 次 `RESULT: ALL PASS`。
 
 **修正一个测试工具的时序缺陷。** 复验时 `broker.emqx.io` 偶发
