@@ -47,6 +47,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/Src/modbus_host.c        # 纯协议：CRC / 组帧 / 解析 / 双超时
     Core/Src/modbus_port_stm32.c  # 移植层：HAL 串口 + RS485 方向脚
+    Core/Src/mqtt_codec.c         # 纯协议：MQTT Remaining Length 编解码（W3·S15）
 )
 
 # Add include paths

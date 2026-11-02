@@ -1,0 +1,63 @@
+---
+# edge-gateway 统一 C 代码风格
+# 由 clangd（Shift+Alt+F）与 clang-format 共用，改完记得 clangd 重启
+Language: Cpp
+BasedOnStyle: LLVM
+
+# ---- 缩进与行宽 ----
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# ---- 大括号：Allman，函数与控制语句的 { 都另起一行 ----
+BreakBeforeBraces: Allman
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: true
+  AfterStruct: true
+  AfterEnum: true
+  AfterUnion: true
+  AfterClass: true
+  AfterNamespace: true
+  BeforeElse: false
+  BeforeCatch: false
+  IndentBraces: false
+
+# ---- 指针/引用贴变量名：const uint8_t *buf ----
+PointerAlignment: Right
+DerivePointerAlignment: false
+
+# ---- 短语句：允许 `if (x) return -1;`，循环体一律换行 ----
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+
+# ---- 注释 ----
+# ReflowComments 必须显式关掉：否则超长中文行尾注释会被重新折行
+ReflowComments: false
+# 行尾注释对齐沿用 LLVM 默认（true），不显式设置以免版本差异
+
+# ---- 保留手写列对齐 ----
+# 连续声明对齐（static uint16_t s_crc_tab / static int      s_crc_ready）保留
+AlignConsecutiveDeclarations: Consecutive
+AlignConsecutiveAssignments: false
+AlignConsecutiveMacros: false
+AlignConsecutiveBitFields: false
+AlignOperands: Align
+AlignAfterOpenBracket: Align
+
+# ---- 空行与 include ----
+MaxEmptyLinesToKeep: 1
+SeparateDefinitionBlocks: Leave
+SortIncludes: true
+IncludeBlocks: Preserve
+
+# ---- 杂项 ----
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: false
+Cpp11BracedListStyle: true
+FixNamespaceComments: false

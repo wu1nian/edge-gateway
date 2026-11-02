@@ -1,4 +1,5 @@
 #include "modbus_host.h"
+#include <stdint.h>
 
 /* ================= CRC-16/MODBUS 查表法 ================= */
 static uint16_t s_crc_tab[256];

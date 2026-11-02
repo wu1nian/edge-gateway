@@ -8,7 +8,7 @@ static void uart_flush_rx(UART_HandleTypeDef *h)
 {
     volatile uint32_t tmp;
 
-    while (__HAL_UART_GET_FLAG(h, UART_FLAG_RXNE) != RESET)
+    while (__HAL_UART_GET_FLAG(h, UART_FLAG_RXNE) != RESET)      //RXNE:接收数据寄存器非空标志
     {
         tmp = h->Instance->DR;
     }
