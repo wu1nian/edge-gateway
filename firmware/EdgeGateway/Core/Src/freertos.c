@@ -25,8 +25,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>  /* printf/snprintf 声明；GCC 14 起隐式声明是硬错误 */
-#include "iwdg.h"   /* 临时：为在任务里喂狗取 hiwdg */
+#include <stdio.h>
+#include "app_tasks.h" /* W4·S25：任务骨架（6 任务 + 4 队列 + 1 锁） */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,22 +46,21 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+/* W4·S25：任务骨架的创建在 app_tasks_init() 里统一做，
+ * 这里不再保留 CubeMX 生成的默认任务（它的"闪烁+打印"演示逻辑已被 6 任务取代）。*/
+static int s_init_rc = -1;
 
+/* main.c 在 osKernelStart() 前用它判断创建是否成功 */
+int app_tasks_init_result(void)
+{
+  return s_init_rc;
+}
 /* USER CODE END Variables */
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .stack_size = 256 * 4,   /* 1024 B：原 128*4=512B 装不下 printf 调用链 */
-  .priority = (osPriority_t) osPriorityNormal,
-};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 
 /* USER CODE END FunctionPrototypes */
-
-void StartDefaultTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -92,38 +91,17 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
-
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  /* W4·S25：6 个任务统一在这里创建。
+   * app_tasks_init() 内部顺序：① 建 mutex/队列 → ② 建任务。
+   * 返回值存进 s_init_rc，main.c 在 osKernelStart() 前检查。*/
+  s_init_rc = app_tasks_init();
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
   /* USER CODE END RTOS_EVENTS */
 
-}
-
-/* USER CODE BEGIN Header_StartDefaultTask */
-/**
-  * @brief  Function implementing the defaultTask thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
-{
-  /* USER CODE BEGIN StartDefaultTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    HAL_IWDG_Refresh(&hiwdg);   /* 临时喂狗：S9 再换成正式喂狗策略 */
-    HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
-    printf("hello gateway\r\n");
-    osDelay(500);               /* 0.5s 翻转一次 */
-  }
-  /* USER CODE END StartDefaultTask */
 }
 
 /* Private application code --------------------------------------------------*/

@@ -28,6 +28,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>  /* setvbuf/stdout/_IONBF；printf 重定向需要 */
+#include "app_tasks.h" /* W4·S25：app_tasks_init_result() */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -105,6 +106,15 @@ int main(void)
   /* Init scheduler */
   osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
+
+  /* USER CODE BEGIN RTOS_CHECK */
+  /* W4·S25：任务/队列/锁创建失败就停在这里，不要带着半套对象启动调度器 */
+  if (app_tasks_init_result() != 0)
+  {
+    printf("app_tasks_init FAILED\r\n");
+    Error_Handler();
+  }
+  /* USER CODE END RTOS_CHECK */
 
   /* Start scheduler */
   osKernelStart();
