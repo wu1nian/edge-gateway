@@ -20,21 +20,32 @@ STM32F411CEU6（WeAct 黑药丸）· ESP8266（AT 固件）· W25Q64 Flash ·
 
 ## 进度
 
-目前做完前三周，第四周在写。
+目前做完前四周，第五周还没开始。
 
 | 周 | 内容 | 状态 |
 |:--|:--|:--|
 | W1 | CubeMX 骨架、96 MHz 时钟、FreeRTOS、printf 重定向 | 完成 |
 | W2 | 手写 Modbus-RTU 主站，PC 仿真先行 | 完成 |
 | W3 | 手写 MQTT 3.1.1 报文层，真 broker 验证 | 完成 |
-| W4 | RTOS 任务架构（任务划分、队列、锁、数据流） | 进行中 |
+| W4 | RTOS 任务架构（任务划分、队列、锁、数据流） | 骨架完成 |
 | W5 | Flash 分区与掉电保护 | 未开始 |
 | W6 | 传感器采集、LVGL 界面 | 未开始 |
 | W7 | ESP8266 联网、接真云端 | 未开始 |
 | W8 | 优化与压测 | 未开始 |
 | W9 | 收尾、文档、复盘 | 未开始 |
 
-**W3 是最近完成的一周**，也是目前证据最实的一周：
+**W4 只做到骨架，功能还没有。** 六个任务的空壳、四个队列、一把互斥锁都跑起来了，
+每个任务的业务逻辑还是 `TODO` 占位，要等 W5-W7 分别填进去。架构文档在
+[`docs/task-architecture.md`](docs/task-architecture.md)。
+
+- `app_tasks.c` 里 6 个任务全部创建成功，编译 0 error 0 warning。
+- 编译期断言卡住了 `sensor_rec_t` 是 16 字节、`seq` 在偏移 12，W5 的落盘格式依赖这个。
+- 优先级按截止期排：Modbus 4（200 ms 硬超时）、网络 3、传感器和存储 2、UI 1、监控 0。
+- 删除 CubeMX 默认任务时，把它原来的喂狗调用接到了 `monitor_task` 里——IWDG 在调度器
+  启动前就已使能，超时 20 s，不接手的话板子会每 20 s 复位一次。
+- **跑起来还没有硬件验证**，调度计数和栈水位都是空的，等有板再补。
+
+**W3 是证据最实的一周**：
 
 - `mqtt_codec.c` 692 行，纯 C，只 include 了 `<stddef.h>` 和 `<string.h>`，
   不碰 HAL 也不碰 FreeRTOS。所以在 PC 上用 gcc 就能直接编译测试。
@@ -65,7 +76,7 @@ STM32F411CEU6（WeAct 黑药丸）· ESP8266（AT 固件）· W25Q64 Flash ·
 |:--|:--|
 | `EdgeGateway.ioc` | CubeMX 工程文件。引脚分配、时钟树、外设开关都以它为准，改了要重新生成 |
 | `.mxproject` | CubeMX 的生成记录，用来判断哪些文件是它生成的 |
-| `CMakeLists.txt` | 构建主文件。CubeMX 生成的部分之外，我在这里手工登记了自己写的三个源文件（`modbus_host.c`、`modbus_port_stm32.c`、`mqtt_codec.c`） |
+| `CMakeLists.txt` | 构建主文件。CubeMX 生成的部分之外，我在这里手工登记了自己写的四个源文件（`modbus_host.c`、`modbus_port_stm32.c`、`mqtt_codec.c`、`app_tasks.c`） |
 | `CMakePresets.json` | 定义 `Debug` / `Release` 两个配置，都继承一个隐藏的 `default`（Ninja 生成器 + ARM 工具链）。产物分别落在 `build/Debug` 和 `build/Release` |
 | `STM32F411xx_FLASH.ld` | 链接脚本，规定代码放 FLASH（512 KB）、变量放 RAM（128 KB）的地址布局 |
 | `startup_stm32f411xe.s` | 启动汇编。设置初始栈指针、定义中断向量表、跳到 `main` |
@@ -80,6 +91,8 @@ STM32F411CEU6（WeAct 黑药丸）· ESP8266（AT 固件）· W25Q64 Flash ·
 | `modbus_host.h` | **手写**。Modbus 协议核心的对外接口：功能码、参数范围、SHT20 寄存器地址、帧结构体、CRC 函数、收发函数 |
 | `modbus_port_stm32.h` | **手写**。移植层接口，只有一个 `mb_port_stm32()`，返回一个绑定到 USART2 的串口操作表 |
 | `mqtt_codec.h` | **手写**。MQTT 报文层接口：RL 编解码、各种组帧函数、收包分类、心跳判断，以及 `MQTT_RL_MAX_BYTES` 等常量 |
+| `app_config.h` | **手写**。任务架构里的所有数字：6 个优先级、6 个栈深度、4 个队列深度、3 个周期，每个都写了依据 |
+| `app_tasks.h` | **手写**。任务骨架对外接口：`app_tasks_init()`、`app_tasks_init_result()`、`app_net_state()`、`app_fmt_record()`，以及网络三态枚举和 `sensor_rec_t` 结构体 |
 | `FreeRTOSConfig.h` | FreeRTOS 配置。tick 定 1000 Hz，抢占式调度，堆 15360 字节。CubeMX 生成，我改过堆大小 |
 | `stm32f4xx_hal_conf.h` | HAL 模块开关，决定哪些外设驱动被编进去 |
 | `stm32f4xx_it.h` | 中断服务函数声明 |
@@ -90,10 +103,11 @@ STM32F411CEU6（WeAct 黑药丸）· ESP8266（AT 固件）· W25Q64 Flash ·
 | 文件 | 说明 |
 |:--|:--|
 | `main.c` | 程序入口。外设初始化、启动 FreeRTOS 调度器。初始化代码是 CubeMX 生成的，`USER CODE` 区里是我写的，其中最重要的一段是 `_write` 重定向到 USART1，`printf` 才能打到串口 |
-| `freertos.c` | FreeRTOS 初始化，创建默认任务。目前默认任务里只有一段临时逻辑：喂狗、翻转 LED、打印一行、延时 500 ms。文件末尾我加了栈溢出钩子 `vApplicationStackOverflowHook`，任务爆栈时停在那里，方便挂调试器看是谁。W4 会把这个文件铺开成六个业务任务 |
+| `freertos.c` | FreeRTOS 初始化。CubeMX 原本在这里建了一个默认任务，W4 删掉了它，改成调用 `app_tasks_init()` 并把返回值存下来给 `main.c` 检查。文件末尾的栈溢出钩子 `vApplicationStackOverflowHook` 保留：任务爆栈时停在那里，方便挂调试器看是谁 |
 | `modbus_host.c` | **手写，231 行**。Modbus-RTU 全部协议逻辑：CRC-16 查表、0x03/0x04/0x06 组帧、正常与异常响应解析、字节间超时和帧间超时两层超时。完全不含 HAL，靠调用方传入的读写函数指针操作串口 |
 | `modbus_port_stm32.c` | **手写，77 行**。把 `modbus_host` 和 STM32 连起来：用 `HAL_UART_Transmit` / `HAL_UART_Receive` 收发，加上 RS485 方向脚（DE）的翻转时序 |
 | `mqtt_codec.c` | **手写，692 行**。MQTT 3.1.1 报文层：Remaining Length 变长整数编解码、CONNECT/SUBSCRIBE/PUBLISH/PUBACK/PINGREQ/DISCONNECT 组帧、收包边界分类、心跳到期判断 |
+| `app_tasks.c` | **手写**。任务骨架：创建 6 个任务、4 个队列和 1 把互斥锁，先建同步对象再建任务。业务逻辑仍是 `TODO`，日志统一走 `log_line()` 并受 `uart1_mutex` 保护，`monitor_task` 每 10 s 打一次计数、栈水位和丢帧数 |
 | `gpio.c` / `usart.c` / `spi.c` / `rtc.c` / `iwdg.c` | 各外设初始化，CubeMX 生成，目前没有手工改动。`usart.c` 里开了两路：USART1 给调试打印，USART2 给 RS485。ESP8266 用的串口要等 W7 再加 |
 | `stm32f4xx_hal_msp.c` | HAL 的底层初始化回调（时钟使能、引脚复用、NVIC 配置），CubeMX 生成 |
 | `stm32f4xx_hal_timebase_tim.c` | 用 TIM 做 HAL 的时基，这样 HAL 的 `HAL_Delay` 不占 SysTick，SysTick 留给 FreeRTOS |
@@ -133,6 +147,7 @@ STM32F411CEU6（WeAct 黑药丸）· ESP8266（AT 固件）· W25Q64 Flash ·
 | `modbus.md` | Modbus 协议合同。SHT20 的寄存器表、请求响应帧格式、哨兵帧、手册里 CRC 的勘误。代码以这份为准 |
 | `mqtt.md` | MQTT 验证记录。每个单元跑了什么、实际输出是什么、公网 broker 偶发失败怎么定位的，还有一节专门写「哪些是自己推的、哪些只是参考了命名风格」 |
 | `w3-summary.md` | W3 阶段总结。交付物、验证证据、设计决策、踩坑、验收清单、验证边界 |
+| `task-architecture.md` | W4 任务架构。6 个任务的优先级与依据、共享资源用锁还是队列、数据流与网络三态机、故障隔离、内存占用、待补清单 |
 
 ### `hardware/`
 
