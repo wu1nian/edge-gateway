@@ -51,6 +51,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/app_tasks.c          # 任务骨架：6 任务 + 4 队列 + 1 互斥锁（W4·S25）
     Core/Src/ring_buffer.c        # Flash 环形缓冲游标：wp/rp、满空判据（W4·S24）
     Core/Src/net_fsm.c            # 网络三态机 + 指数退避（W4·S24）
+    Core/Src/rec_codec.c          # sensor_rec_t ↔ 32 B Flash 记录 + CRC（W4·S24）
+    Core/Src/puback.c             # PUBACK 解析：40 02 xx xx（W4·S24）
+    Core/Src/net_tx.c             # 窗口=1 发送编排：PUBACK 才推进 rp（W4·S24）
 )
 
 # Add include paths

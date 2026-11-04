@@ -9,21 +9,28 @@
   *            ③ 不空转：每个任务都有明确阻塞点
   *            ④ 能观测：栈水位读得出来
   *
-  *          S24 已接入的两个纯逻辑模块：
+  *          S24 已接入的纯逻辑模块（都不碰 HAL，可在 PC 上单测）：
   *            ring_buffer.c —— Flash 环形缓冲游标（wp/rp/满空/覆盖最旧）
   *            net_fsm.c     —— 网络三态机 + 指数退避
-  *          它们不碰 HAL，可在 PC 上单测：tools/test_ring_fsm/
+  *            rec_codec.c   —— sensor_rec_t ↔ 32 B Flash 记录（含 CRC）
+  *            puback.c      —— PUBACK 解析，"发成功"的唯一判定点
+  *            net_tx.c      —— 窗口=1 的发送编排，只有匹配 PUBACK 才推进 rp
+  *          测试在 tools/test_ring_fsm/
   *
   *          业务逻辑先留 TODO，按周填：
   *            W5 → storage_task 真的写 W25Q64（接 rb_put 的落盘顺序）
+  *                 + net_tx 从 W25Q64 读回记录（现在用占位记录）
   *            W6 → sensor_task 真实采集 + ui_task LVGL 刷屏
-  *            W7 → net_task ESP8266 AT + MQTT 发送（PUBACK 才 rb_commit）
+  *            W7 → net_task 的 ESP8266 AT 通道（真的是把字节发出去）
   ******************************************************************************
   */
 
 #include "app_tasks.h"
 #include "app_config.h"
 #include "net_fsm.h"
+#include "net_tx.h"
+#include "puback.h"
+#include "rec_codec.h"
 #include "ring_buffer.h"
 
 #include "FreeRTOS.h"
@@ -192,9 +199,63 @@ static void modbus_task(void *arg)
 
 /* ---------------- net_task：事件 + 超时（心跳检查 + 补传） ----------------
  *
- *  这一版把 S24 的三态机和环形缓冲接进来了，剩下没做的只有"真的把字节
- *  发给 ESP8266"（W7）。状态迁移、退避、PUBACK 推进 rp 都是真逻辑。
+ *  这一版把三态机、环形缓冲、PUBACK 解析、窗口=1 发送编排都接进来了。
+ *  除了"真的把字节发给 ESP8266"（W7，走 s_net_send 回调）和"从 Flash
+ *  读回记录"（W5，net_tx_begin 里是占位记录），其余全是真逻辑。
+ *
+ *  🚨 这一版里 rb_commit() 仍然只出现在一个地方：net_tx_on_puback()。
+ *     上一版那行"取到就提交"的占位已经删掉了。
  */
+
+/* 收包累积器：AT 通道上来的字节先攒成一帧再判 PUBACK */
+static puback_acc_t s_puback_acc;
+
+/* 发送回调：把 payload 交给 ESP8266。
+ *
+ * W7 在这里接 USART（AT+CIPSEND 或透传），返回 0 表示字节已进 TCP。
+ * 现在没有 ESP8266：返回非 0，让 net_tx 立刻退出等待状态，
+ * 于是补传流程会以"发送失败"结束，但 rp 不动、记录留在缓冲里 ——
+ * 这正好是断网场景该有的行为，不是假装成功。*/
+static int s_net_send(const uint8_t *payload, uint16_t len, uint16_t pkt_id)
+{
+    (void)payload;
+    (void)len;
+    (void)pkt_id;
+
+    /* TODO(W7): 组 PUBLISH(QoS1) → AT+CIPSEND → 写 payload → 等 SEND OK
+     *           返回上次错误就返回非 0，让 net_tx 释放窗口。*/
+    return -1;
+}
+
+/* 收包入口：把 AT 通道上收到的字节喂进来。
+ *
+ * 这是"PUBACK 才推进 rp"链条的另一半 —— 发送端在 net_tx_begin()，
+ * 确认端在这里。W7 只需要在一个地方调用它：串口收到字节时。
+ *
+ * 注意它不直接提交，而是交给 net_tx_on_puback()：判定"这个 ACK 是不是
+ * 当前在等的那条"需要知道在途 id，这个状态只有 net_tx 有。*/
+static void net_rx_feed(const uint8_t *data, uint16_t len)
+{
+    uint16_t i;
+    puback_result_t r;
+
+    if (data == NULL) {
+        return;
+    }
+
+    for (i = 0U; i < len; i++) {
+        r = puback_acc_feed(&s_puback_acc, data[i], net_tx_inflight_id());
+        if (r == PUBACK_OK) {
+            (void)net_tx_on_puback(net_tx_inflight_id());
+        } else if (r == PUBACK_ID_MISMATCH) {
+            /* 迟到的旧 ACK：不提交，只记一笔 */
+            log_line("NET", "puback id mismatch");
+        } else {
+            /* INCOMPLETE / NOT_FOUND 都是正常噪声，不刷日志 */
+        }
+    }
+}
+
 static void net_task(void *arg)
 {
     sensor_rec_t rec;
@@ -202,15 +263,30 @@ static void net_task(void *arg)
     uint32_t now_ms;
     uint32_t last_ping_ms = 0U;
     uint32_t retry_at_ms  = 0U;      /* OFFLINE 时下一次尝试重连的时刻 */
-    rb_seq_t seq;
+    uint16_t pkt_id = 0U;
+    net_tx_result_t txr;
 
     (void)arg;
 
     for (;;) {
         /* ① 等一条待发记录。超时也有意义——那是心跳和重连检查的节拍 */
         if (xQueueReceive(s_net_q, &rec, wait) == pdPASS) {
-            /* TODO(W7): mqtt_build_publish() → AT 发出去 */
+            /* 记录本体已经在 Flash 里（storage_task 写的），
+             * 这里收队列入参只是为了有节拍，不直接用 rec 组包。*/
             (void)rec;
+        }
+
+        /* ①.5 收包：AT 通道上来的字节喂进累积器。
+         *
+         * W7 的接入点就是这里：串口收到数据后调 net_rx_feed(buf, n)，
+         * 它会拼帧、判 id，最终走到 net_tx_on_puback() 才推进 rp。
+         *
+         * 现在没有 ESP8266，一行都不读。这里显式 (void) 引用一下，
+         * 是为了让"收包通道还没接上"这件事留成一个可见的占位，
+         * 而不是被编译器当成死代码悄悄删掉 —— 那样 W7 接线时
+         * 很容易忘了这条路径根本没被验证过。 */
+        if (0) {
+            net_rx_feed(NULL, 0U);   /* TODO(W7): 换成真的串口读取 */
         }
 
         now_ms = (uint32_t)(xTaskGetTickCount() * (TickType_t)portTICK_PERIOD_MS);
@@ -219,28 +295,38 @@ static void net_task(void *arg)
          *    🚨 退避的等待靠"时间戳比对"实现，不是 vTaskDelay ——
          *       真在这里 vTaskDelay(30s)，心跳和高优先级唤醒全被堵住。 */
         if (net_fsm_state() == NET_OFFLINE) {
-            if (now_ms >= retry_at_ms) {
-                /* TODO(W7): 发 AT+CIPSTART → CONNACK
-                 * 现在没有 ESP8266，先按"重连失败"处理，让状态机走起来 */
+            if ((uint32_t)(now_ms - retry_at_ms) < 0xC0000000U) {
+                /* 上面这个比较等价于 now_ms >= retry_at_ms，
+                 * 但用减法写，时钟回绕时不会出错（见下面的说明）。*/
+                /* TODO(W7): 发 AT+CIPSTART → 等 CONNACK=00 */
                 net_fsm_on_disconnected();               /* 保持 OFFLINE */
-                /* 等到期再加一个退避间隔；用 while 而不是一次性赋值，
-                 * 防止时钟回绕时 now_ms >= retry_at_ms 永远成立导致忙转 */
                 retry_at_ms = now_ms + net_fsm_next_backoff_ms();
             }
             s_net_state = net_fsm_state();
         } else {
-            /* ③ 在线 / 补传：从环形缓冲取最旧一条发出去 */
-            if (net_fsm_can_send() && (rb_peek(&seq) == 0)) {
-                /* TODO(W7): 取记录 → 组 PUBLISH(QoS1) → 发 → 等 PUBACK
-                 * 🚨 收到 PUBACK 才调 rb_commit()。
-                 *    发送函数返回成功 ≠ broker 收到。 */
-                rb_commit();   /* 占位：W7 换成"真收到 PUBACK 才提交" */
+            /* ③ 等 PUBACK 超时：只放开窗口，不提交、不回退 rp。
+             *    这条记录还在缓冲里，下一轮会重新发 —— QoS1"至少一次"。*/
+            if (net_tx_check_timeout(now_ms)) {
+                log_line("NET", "puback timeout, will resend");
             }
 
-            /* ④ 补传期间每提交一条就检查是否补完，补完回 ONLINE */
+            /* ④ 窗口空着就发下一条。这里返回 BUSY 是常态，不是错误。*/
+            if (!net_tx_is_busy()) {
+                txr = net_tx_begin(s_net_send, &pkt_id);
+                if (txr == NET_TX_STARTED) {
+                    net_tx_note_sent_at(now_ms);
+                } else if ((txr != NET_TX_NO_DATA) && (txr != NET_TX_BUSY)) {
+                    /* NO_DATA/BUSY 都是正常节拍，不刷日志；
+                     * SEND_FAIL/NO_NET/ERR 说明链路有问题，要看见。*/
+                    log_line("NET", net_tx_result_name(txr));
+                }
+            }
+
+            /* ⑤ 补传结束判定：积压清零就回 ONLINE。
+             *    🚨 这里读的是 rb_pending()，它只在真正收到 PUBACK 后才减少。*/
             net_fsm_after_ack(rb_pending());
 
-            /* ⑤ 心跳：到半周期就发，不阻塞等响应 */
+            /* ⑥ 心跳：到半周期就发，不阻塞等响应 */
             if ((uint32_t)(now_ms - last_ping_ms) >=
                 (APP_MQTT_KEEPALIVE_S * 1000U / 2U)) {
                 last_ping_ms = now_ms;
@@ -262,6 +348,7 @@ static void net_task(void *arg)
 static void storage_task(void *arg)
 {
     sensor_rec_t rec;
+    uint8_t  flash_rec[RB_RECORD_BYTES];
     int rc;
 
     (void)arg;
@@ -269,8 +356,17 @@ static void storage_task(void *arg)
     for (;;) {
         /* 永久阻塞：节拍完全由数据到达决定，永不空转 */
         if (xQueueReceive(s_storage_q, &rec, portMAX_DELAY) == pdPASS) {
-            /* TODO(W5): 把 rec 序列化成 32 B 记录 + CRC，写进 W25Q64
-             *           然后【再】调 rb_put() 推进 wp。
+            /* ① 先序列化。这一步是真代码：布局、CRC 都由 rec_codec 保证，
+             *    和 W25Q64 没关系，W5 接上以后原样复用。*/
+            if (rec_encode(&rec, flash_rec) != 0) {
+                /* 只有空指针才会失败，属于编程错误 */
+                s_drop_storage++;
+                s_cnt_storage++;
+                continue;
+            }
+
+            /* ② TODO(W5): 把 flash_rec（32 B）写进 W25Q64
+             *    偏移 rb_seq_to_offset(rb_stat.wp)，然后【再】调 rb_put() 推进 wp。
              *
              * 🚨 顺序不能反：先推进 wp 再写数据，掉电瞬间 wp 会指向
              *    一条没写完的记录，重启后会把垃圾当有效数据补传上去。 */
@@ -411,10 +507,12 @@ int app_tasks_init(void)
         return -1;
     }
 
-    /* ---------- ①.5 上层模块（S24：三态机 + 环形缓冲） ---------- */
+    /* ---------- ①.5 上层模块（S24：三态机 + 环形缓冲 + 发送编排） ---------- */
     /* 必须在建任务之前初始化：net_task / storage_task 一被创建就会用到它们。
      * W5 接 W25Q64 后，rb_init 的两个参数改成从元数据区恢复。*/
     net_fsm_init();
+    net_tx_init();
+    puback_acc_reset(&s_puback_acc);
     if (rb_init(0U, 0U) != 0) {
         return -1;
     }

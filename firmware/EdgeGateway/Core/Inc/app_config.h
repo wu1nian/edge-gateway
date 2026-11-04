@@ -66,6 +66,10 @@ extern "C" {
 #define APP_LOCK_TIMEOUT_MS   100U   /* 拿 uart1_mutex 最多等这么久，拿不到就丢日志 */
 #define APP_MQTT_KEEPALIVE_S   60U   /* MQTT 心跳周期（秒） */
 
+/* MQTT 上报主题。和 W3 验证时用的保持一致，W7 接 bemfa 时再确认。
+ * 补传和在线走同一个主题 —— 数据流只有一条，不需要区分来源。*/
+#define APP_MQTT_TOPIC        "gw01/data"
+
 #ifdef __cplusplus
 }
 #endif
