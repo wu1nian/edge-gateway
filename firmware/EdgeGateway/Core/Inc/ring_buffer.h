@@ -48,7 +48,7 @@ typedef uint32_t rb_seq_t;
 typedef struct {
     rb_seq_t wp;          /* 写指针：下一条要写的序号 */
     rb_seq_t rp;          /* 读指针：下一条待发的序号 */
-    uint32_t count;       /* 当前待发条数 = wp - rp */
+    uint32_t count;       /* 当前待发条数（rb_pending()，不是裸 wp - rp） */
     uint32_t overflow;    /* 因缓冲满而被覆盖的记录总数 */
     uint32_t commits;     /* 收到 PUBACK 后成功推进的次数 */
 } rb_stat_t;
@@ -61,7 +61,9 @@ typedef struct {
 int rb_init(rb_seq_t initial_wp, rb_seq_t initial_rp);
 
 /**
-  * @brief 还有几条待发（wp - rp）
+  * @brief 还有几条待发（(wp % N - rp % N) % N）
+  * @note  不是直接写 wp - rp：游标存的是对 N 取模后的值，不是单调序号，
+  *        wp 绕回 0 而 rp 为 1 时裸减法会得到 0xFFFFFFFF。
   */
 uint32_t rb_pending(void);
 
