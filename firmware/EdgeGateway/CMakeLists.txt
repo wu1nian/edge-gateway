@@ -49,6 +49,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/modbus_port_stm32.c  # 移植层：HAL 串口 + RS485 方向脚
     Core/Src/mqtt_codec.c         # 纯协议：MQTT Remaining Length 编解码（W3·S15）
     Core/Src/app_tasks.c          # 任务骨架：6 任务 + 4 队列 + 1 互斥锁（W4·S25）
+    Core/Src/ring_buffer.c        # Flash 环形缓冲游标：wp/rp、满空判据（W4·S24）
+    Core/Src/net_fsm.c            # 网络三态机 + 指数退避（W4·S24）
 )
 
 # Add include paths

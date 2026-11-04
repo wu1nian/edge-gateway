@@ -109,6 +109,18 @@ sensor_task (1s)
 
 **为什么不能用 `bool is_online`**："连着但还在补传"是一个**真实的中间态**。当 bool 处理 → 补传期间按普通节拍发，积压永远清不完；当离线处理 → 就不该发。**三态是刚需。**
 
+三态机在 `net_fsm.c` 里实现（`net_fsm.h` 导出接口）。它不碰 HAL 也不碰 FreeRTOS，输入只有「连接结果」和「积压条数」，输出是「当前状态」和「该等多久」：
+
+| 接口 | 作用 |
+|:---|:---|
+| `net_fsm_on_connected(pending)` | 连接成功。`pending > 0` → BACKFILL，否则 ONLINE |
+| `net_fsm_on_disconnected()` | 断开 → OFFLINE。**不动 `rp`** |
+| `net_fsm_after_ack(pending)` | 每次 PUBACK 后检查，BACKFILL 且积压归零 → ONLINE |
+| `net_fsm_next_backoff_ms()` | 取本次重连等待时长，内部翻倍（1→2→4→8→16→30 s 封顶）|
+| `net_fsm_can_send()` | OFFLINE 时返回 0，一个字都不发 |
+
+**退避必须封顶**：不封顶的话断网 10 分钟，下次重连要等半个多小时。**退避等待靠时间戳比对实现，不用 `vTaskDelay`**——真在 `net_task` 里睡 30 s，心跳和高优先级唤醒全被堵住。
+
 ### 环形缓冲与掉电安全
 
 - 游标是**记录序号**（`wp`/`rp`），不是字节地址 → 换页/换扇区时逻辑不用改。
@@ -118,6 +130,14 @@ sensor_task (1s)
 - 内存中记录 16 B：`timestamp(4) + temp(2) + humi(2) + light(2) + 隐式填充(2) + seq(4)`，由 `_Static_assert` 卡住大小与偏移。
 - 落盘记录 32 B（W5 定）：上面 16 B + 预留 + `crc(2)`。
 - 补传**窗口 = 1**（逐条等 PUBACK）：天然限速，且不乱序。断网 30 分钟约积压 1800 条，一口气全发会压垮 TCP 缓冲和 broker。
+
+游标逻辑在 `ring_buffer.c`。**这里踩过一个真 bug，值得记下来**：最初 `rb_pending()` 直接写 `s_wp - s_rp`，看起来无符号减法天然能处理回绕。但满载覆盖最旧的瞬间，`wp` 绕回 0 而 `rp` 是 1，`0 - 1` 得到 `0xFFFFFFFF`（4294967295）。正确写法是先各自对 `N` 取模再减：
+
+```c
+return (uint32_t)((s_wp % RB_CAPACITY) - (s_rp % RB_CAPACITY)) % RB_CAPACITY;
+```
+
+这个 bug 在 PC 单元测试里直接暴露了，`monitor_task` 打印出来的 `pending` 会是个天文数字。修正后 `tools/test_ring_fsm` 72 项断言全过。
 
 ---
 
@@ -172,10 +192,10 @@ LSI ≈ 32 kHz, 预分频 256, 重载 2499
 ## 6. 内存实测（Debug 构建）
 
 ```text
-[49/49] Linking C executable EdgeGateway.elf
+[51/51] Linking C executable EdgeGateway.elf
 Memory region         Used Size  Region Size  %age Used
-           RAM:       21664 B       128 KB     16.53%
-         FLASH:       45480 B       512 KB      8.67%
+           RAM:       21696 B       128 KB     16.55%
+         FLASH:       46836 B       512 KB      8.93%
 -- 0 error, 0 warning
 ```
 
@@ -185,8 +205,10 @@ Memory region         Used Size  Region Size  %age Used
 | `configTOTAL_HEAP_SIZE` | 15360 B |
 | 队列合计 | 1148 B（16+16+1+8 条，每条 28 B 头开销）|
 | 堆占用估算 | ≈ 10.6 KB / 15 KB ≈ 69% |
-| 整个 `.data`+`.bss` | 21664 B / 128 KB（**16.53 %**）|
-| FLASH | 45480 B / 512 KB（**8.67 %**）|
+| 整个 `.data`+`.bss` | 21696 B / 128 KB（**16.55 %**）|
+| FLASH | 46836 B / 512 KB（**8.93 %**）|
+
+> 相比 S25 骨架（`45480 B`）增加 `1356 B`，来自 `ring_buffer.c` + `net_fsm.c` 两个模块的代码与常量。
 
 > ⚠️ 这些是**骨架期**数字：任务逻辑还是 TODO，所以栈余量偏大是假象。
 > **W5 / W6 / W7 各自填完逻辑后必须用 `uxTaskGetStackHighWaterMark()` 复测再收紧。**
@@ -199,13 +221,32 @@ Memory region         Used Size  Region Size  %age Used
 | 项 | 当前状态 | 什么时候定 |
 |:---|:---|:---|
 | 栈深度 | 骨架期初值，余量偏大 | **W5/W6/W7 填完各自重测** |
-| `storage_task` 落盘 | TODO 占位 | **W5**（S29–S35）|
+| `storage_task` 落盘 | 队列 + `rb_put()` 已接好，**写 Flash 的字节操作还是 TODO** | **W5**（S29–S35）|
+| 环形缓冲落盘后端 | 游标逻辑已完成并单测；**数据本体没写进 W25Q64**，`wp/rp` 也未存元数据区 | **W5** |
 | `sensor_task` 真实采集 | 固定值占位（25.3℃/60.0%/1200） | **W6** |
 | `ui_task` LVGL 刷屏 | TODO 占位 | **W6** |
-| `net_task` AT + MQTT 发送 | TODO 占位 | **W7**（ESP8266 巴法云 `bemfa.com:9501`）|
+| `net_task` AT + MQTT 发送 | 三态机 + 退避 + `rb_peek/commit` 已接好；**实际收发还是 TODO** | **W7**（ESP8266 巴法云 `bemfa.com:9501`）|
+| `rb_commit()` 的触发条件 | 骨架期**占位调用**，见下方说明 | **W7 换成真 PUBACK** |
 | ESP8266 串口 | **尚未配置**（只有 USART1 调试 + USART2 RS485）| **W7** |
 | CPU 占用统计 | 未开 | W8 |
 | 喂狗策略 | 已在 `monitor_task`，10 s 一轮 | W9 做超时诊断 |
 | 栈水位实测 | **未测，无硬件** | 有板后第一件事 |
 
-> W4 是**架构 + 骨架**，不是功能实现。这一点必须说清楚，不能让人误以为架构定稿 = 功能完成。
+### 关于 `rb_commit()` 的占位调用（必须说清楚）
+
+`net_task` 里现在长这样：
+
+```c
+if (net_fsm_can_send() && (rb_peek(&seq) == 0)) {
+    /* TODO(W7): 取记录 → 组 PUBLISH(QoS1) → 发 → 等 PUBACK */
+    rb_commit();   /* 占位：W7 换成"真收到 PUBACK 才提交" */
+}
+```
+
+**这是一处临时代码，和本项目的核心承诺直接冲突**：环形缓冲的整个价值就在于"只有 PUBACK 到达才推进 `rp`"，而这里没有网络，却在取到记录后立刻提交了。
+
+之所以留着它，是为了让状态机跑起来——否则没有 ESP8266，`BACKFILL` 永远走不到 `ONLINE`，`monitor_task` 打出来的状态永远是 `OFFLINE`，整个 S24 逻辑等于没验证。
+
+**W7 接上 ESP8266 后必须删掉这行**，改由解析 `PUBACK`（`40 02 xx xx`）的分支来调 `rb_commit()`。`ring_buffer.c` 和 `net_fsm.c` 本身不需要改，只是调用点搬家。这个代价是：**当前固件如果真跑在板子上，`rp` 会推进得比实际发送快**，也就是说它是"演示状态机"用的，不是"保证不丢数据"用的。
+
+> W4 是**架构 + 骨架**，不是功能实现。S24 让"该进 Flash 的进 Flash、该等的 PUBACK 等 PUBACK"这套流程有了可单测的实体，但**没有任何一条记录真的被发到云端**。这一点必须说清楚，不能让人误以为架构定稿 = 功能完成。
