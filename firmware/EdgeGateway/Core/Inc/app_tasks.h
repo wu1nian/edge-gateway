@@ -16,6 +16,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stddef.h>   /* offsetof，给下面的 _Static_assert 用 */
 
 /* ==========================================================================
  * 网络状态机（三态）
@@ -48,6 +49,12 @@ typedef struct {
     uint16_t light;          /* 光照原始值 */
     uint32_t seq;            /* 自增序号，补传时用它确认顺序 */
 } sensor_rec_t;
+
+/* 把布局钉死在编译期：改字段/改顺序导致大小或偏移变化，立刻编译失败。
+ * 这不是文档，是约束 —— W5 按固定 16 B 落盘，错一个字节整块数据就废了。
+ * 断言消息故意用 ASCII：arm-none-eabi-gcc 会把中文断言串转义成 \377... 乱码。*/
+_Static_assert(sizeof(sensor_rec_t) == 16U, "sensor_rec_t must be 16 bytes");
+_Static_assert(offsetof(sensor_rec_t, seq) == 12U, "sensor_rec_t.seq must be at offset 12");
 
 /**
   * @brief  一次性创建所有队列 / 互斥锁 / 任务
